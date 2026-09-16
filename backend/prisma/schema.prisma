@@ -1,0 +1,341 @@
+// ============================================
+// Ale Motos — Prisma Schema
+// ============================================
+// Modelo de datos completo para gestión de repuestos de motos y taller.
+// Normalizado a 3FN con desnormalizaciones intencionales documentadas.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USUARIOS Y ROLES
+// ============================================
+
+model Rol {
+  id       String    @id @default(uuid())
+  nombre   String    @unique // admin, vendedor, mecanico
+  permisos Json      @default("{}") // Estructura de permisos flexible
+  usuarios Usuario[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("roles")
+}
+
+model Usuario {
+  id           String  @id @default(uuid())
+  email        String  @unique
+  passwordHash String  @map("password_hash")
+  nombre       String
+  rolId        String  @map("rol_id")
+  activo       Boolean @default(true)
+
+  rol              Rol               @relation(fields: [rolId], references: [id])
+  ventas           Venta[]
+  reparaciones     Reparacion[]
+  estadoHistorial  EstadoHistorial[]
+  movimientosStock MovimientoStock[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("usuarios")
+}
+
+// ============================================
+// CATÁLOGO (Productos, Categorías, Proveedores)
+// ============================================
+
+model Categoria {
+  id                    String     @id @default(uuid())
+  nombre                String     @unique
+  margenSugeridoDefault Float      @default(30) @map("margen_sugerido_default")
+  productos             Producto[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("categorias")
+}
+
+model Proveedor {
+  id        String     @id @default(uuid())
+  nombre    String
+  contacto  String?
+  telefono  String?
+  email     String?
+  direccion String?
+  productos Producto[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("proveedores")
+}
+
+model Producto {
+  id                  String  @id @default(uuid())
+  sku                 String  @unique
+  nombre              String
+  categoriaId         String  @map("categoria_id")
+  proveedorId         String? @map("proveedor_id")
+  precioCosto         Float   @map("precio_costo")
+  margenPorcentaje    Float   @map("margen_porcentaje")
+  precioVenta         Float   @map("precio_venta")
+  stockActual         Int     @default(0) @map("stock_actual")
+  stockReservado      Int     @default(0) @map("stock_reservado")
+  stockMinimo         Int     @default(0) @map("stock_minimo")
+  modelosCompatibles  String[] @map("modelos_compatibles") // Array de modelos de moto compatibles
+  activo              Boolean @default(true)
+
+  categoria        Categoria         @relation(fields: [categoriaId], references: [id])
+  proveedor        Proveedor?        @relation(fields: [proveedorId], references: [id])
+  itemsVenta       ItemVenta[]
+  repuestosUsados  RepuestoUsado[]
+  movimientosStock MovimientoStock[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([categoriaId])
+  @@index([proveedorId])
+  @@index([nombre])
+  @@map("productos")
+}
+
+// ============================================
+// CLIENTES Y MOTOS
+// ============================================
+
+model Cliente {
+  id        String  @id @default(uuid())
+  dni       String? @unique
+  nombre    String
+  telefono  String?
+  email     String?
+  direccion String?
+
+  motos  Moto[]
+  ventas Venta[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([dni])
+  @@map("clientes")
+}
+
+model Moto {
+  id               String  @id @default(uuid())
+  clienteId        String? @map("cliente_id")
+  dominio          String? @unique // Patente
+  marca            String
+  modelo           String
+  anio             Int?    @map("anio")
+  kilometrajeActual Int?   @map("kilometraje_actual")
+
+  cliente      Cliente?     @relation(fields: [clienteId], references: [id])
+  reparaciones Reparacion[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([clienteId])
+  @@index([dominio])
+  @@map("motos")
+}
+
+// ============================================
+// VENTAS
+// ============================================
+
+enum MetodoPago {
+  efectivo
+  transferencia
+  tarjeta_debito
+  tarjeta_credito
+  combinado
+
+  @@map("metodo_pago")
+}
+
+enum TipoComprobante {
+  remito
+  factura_afip
+
+  @@map("tipo_comprobante")
+}
+
+enum EstadoSincronizacion {
+  local
+  sincronizado
+
+  @@map("estado_sincronizacion")
+}
+
+model Venta {
+  id                   String               @id @default(uuid())
+  clienteId            String?              @map("cliente_id") // Nullable: venta de mostrador sin cliente
+  usuarioId            String               @map("usuario_id")
+  fecha                DateTime             @default(now())
+  total                Float
+  descuento            Float                @default(0)
+  metodoPago           MetodoPago           @map("metodo_pago")
+  tipoComprobante      TipoComprobante      @default(remito) @map("tipo_comprobante")
+  estadoSincronizacion EstadoSincronizacion @default(sincronizado) @map("estado_sincronizacion")
+  uuidLocal            String               @unique @map("uuid_local") // Clave de idempotencia offline
+
+  cliente  Cliente?    @relation(fields: [clienteId], references: [id])
+  usuario  Usuario     @relation(fields: [usuarioId], references: [id])
+  items    ItemVenta[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([fecha])
+  @@index([clienteId])
+  @@map("ventas")
+}
+
+// Desnormalización intencional: precio_unitario_congelado es snapshot
+// del precio al momento de la venta para que cambios futuros de precio
+// no alteren reportes financieros históricos.
+model ItemVenta {
+  id                     String @id @default(uuid())
+  ventaId                String @map("venta_id")
+  productoId             String @map("producto_id")
+  cantidad               Int
+  precioUnitarioCongelado Float  @map("precio_unitario_congelado")
+  descuento              Float  @default(0)
+
+  venta    Venta    @relation(fields: [ventaId], references: [id], onDelete: Cascade)
+  producto Producto @relation(fields: [productoId], references: [id])
+
+  @@map("items_venta")
+}
+
+// ============================================
+// REPARACIONES / TALLER
+// ============================================
+
+enum EstadoReparacion {
+  recibido
+  presupuestado
+  aprobado
+  en_proceso
+  listo
+  entregado
+
+  @@map("estado_reparacion")
+}
+
+model Reparacion {
+  id                    String               @id @default(uuid())
+  motoId                String               @map("moto_id")
+  usuarioId             String               @map("usuario_id")
+  fechaIngreso          DateTime             @default(now()) @map("fecha_ingreso")
+  descripcionProblema   String               @map("descripcion_problema")
+  estado                EstadoReparacion     @default(recibido)
+  totalRepuestos        Float                @default(0) @map("total_repuestos")
+  totalManoObra         Float                @default(0) @map("total_mano_obra")
+  uuidLocal             String               @unique @map("uuid_local")
+  estadoSincronizacion  EstadoSincronizacion @default(sincronizado) @map("estado_sincronizacion")
+
+  moto             Moto              @relation(fields: [motoId], references: [id])
+  usuario          Usuario           @relation(fields: [usuarioId], references: [id])
+  repuestosUsados  RepuestoUsado[]
+  estadoHistorial  EstadoHistorial[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([motoId])
+  @@index([estado])
+  @@index([fechaIngreso])
+  @@map("reparaciones")
+}
+
+// Desnormalización intencional: precio_unitario_congelado (misma razón que ItemVenta)
+model RepuestoUsado {
+  id                     String @id @default(uuid())
+  reparacionId           String @map("reparacion_id")
+  productoId             String @map("producto_id")
+  cantidad               Int
+  precioUnitarioCongelado Float  @map("precio_unitario_congelado")
+
+  reparacion Reparacion @relation(fields: [reparacionId], references: [id], onDelete: Cascade)
+  producto   Producto   @relation(fields: [productoId], references: [id])
+
+  @@map("repuestos_usados")
+}
+
+// Auditoría inmutable: solo INSERT, nunca UPDATE ni DELETE
+model EstadoHistorial {
+  id            String           @id @default(uuid())
+  reparacionId  String           @map("reparacion_id")
+  estado        EstadoReparacion
+  usuarioId     String           @map("usuario_id")
+  fechaHora     DateTime         @default(now()) @map("fecha_hora")
+  observaciones String?
+
+  reparacion Reparacion @relation(fields: [reparacionId], references: [id], onDelete: Cascade)
+  usuario    Usuario    @relation(fields: [usuarioId], references: [id])
+
+  @@index([reparacionId])
+  @@map("estado_historial")
+}
+
+// ============================================
+// MOVIMIENTOS DE STOCK
+// ============================================
+
+enum TipoMovimientoStock {
+  entrada
+  salida_venta
+  salida_reparacion
+  ajuste
+
+  @@map("tipo_movimiento_stock")
+}
+
+model MovimientoStock {
+  id           String              @id @default(uuid())
+  productoId   String              @map("producto_id")
+  tipo         TipoMovimientoStock
+  cantidad     Int                 // Positivo para entrada, negativo para salida
+  motivo       String?
+  referenciaId String?             @map("referencia_id") // UUID de la venta o reparación
+  usuarioId    String              @map("usuario_id")
+  fecha        DateTime            @default(now())
+
+  producto Producto @relation(fields: [productoId], references: [id])
+  usuario  Usuario  @relation(fields: [usuarioId], references: [id])
+
+  @@index([productoId])
+  @@index([fecha])
+  @@map("movimientos_stock")
+}
+
+// ============================================
+// FINANZAS
+// ============================================
+
+model GastoFijo {
+  id              String   @id @default(uuid())
+  nombre          String
+  monto           Float
+  frecuencia      String   // "mensual", "anual"
+  fechaRegistro   DateTime @default(now()) @map("fecha_registro")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("gastos_fijos")
+}
