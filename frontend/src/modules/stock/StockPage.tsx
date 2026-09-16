@@ -2,10 +2,41 @@
 // Ale Motos — Stock Page
 // ============================================
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../../shared/api';
 import { Edit2, Trash2, Search, Plus, AlertCircle, RefreshCw } from 'lucide-react';
 import { useDialog } from '../../shared/components/DialogProvider';
+
+// ── HID/USB barcode scanner (keyboard-wedge) ──────────────────────────
+function useBarcodeScanner(enabled: boolean, onScan: (code: string) => void) {
+  const bufferRef = useRef('');
+  const lastTimeRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      // Allow scanning when SKU input is focused (scanner types into it)
+      const isSkuInput = (e.target as HTMLElement)?.id === 'scanner-sku-input';
+      if ((tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && !isSkuInput) return;
+
+      const now = Date.now();
+      const delta = now - lastTimeRef.current;
+      lastTimeRef.current = now;
+      if (delta > 100) bufferRef.current = '';
+
+      if (e.key === 'Enter') {
+        const code = bufferRef.current.trim();
+        if (code.length >= 3) onScan(code);
+        bufferRef.current = '';
+        return;
+      }
+      if (e.key.length === 1) bufferRef.current += e.key;
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [enabled, onScan]);
+}
 
 export function StockPage() {
   const { showAlert, showConfirm, showPrompt } = useDialog();
@@ -23,6 +54,11 @@ export function StockPage() {
 
   const [activeSuggestionField, setActiveSuggestionField] = useState<'sku' | 'nombre' | null>(null);
   const [suggestions, setSuggestions] = useState<any[]>([]);
+
+  // Scanner state
+  const [scannerEnabled, setScannerEnabled] = useState(false);
+  const [scannerStatus, setScannerStatus] = useState<'idle' | 'scanning' | 'found' | 'notfound'>('idle');
+  const scannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [form, setForm] = useState({
     sku: '', nombre: '', categoriaId: '', proveedorId: '',
@@ -86,6 +122,36 @@ export function StockPage() {
     }, 300);
     return () => clearTimeout(timer);
   }, [form.sku, form.nombre, activeSuggestionField, editingProduct]);
+
+  // ── Barcode scan handler ──────────────────────────────────────
+  const handleScan = useCallback(async (code: string) => {
+    setScannerStatus('scanning');
+    if (scannerTimeoutRef.current) clearTimeout(scannerTimeoutRef.current);
+    try {
+      const res = await api.getProductos({ search: code, limit: '5' });
+      // Prefer exact SKU match, fall back to first result
+      const match = res.data.find((p: any) =>
+        p.sku && p.sku.toLowerCase() === code.toLowerCase()
+      ) || (res.data.length === 1 ? res.data[0] : null);
+
+      if (match) {
+        setScannerStatus('found');
+        handleEdit(match);
+      } else {
+        setScannerStatus('notfound');
+        // Open create modal with SKU pre-filled
+        resetForm();
+        setEditingProduct(null);
+        setForm(prev => ({ ...prev, sku: code }));
+        setShowModal(true);
+      }
+    } catch {
+      setScannerStatus('idle');
+    }
+    scannerTimeoutRef.current = setTimeout(() => setScannerStatus('idle'), 2500);
+  }, []);
+
+  useBarcodeScanner(scannerEnabled, handleScan);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -227,6 +293,13 @@ export function StockPage() {
 
   const totalPages = pagination.totalPages || 1;
 
+  const scannerStatusInfo = {
+    idle:     { color: '#71717a', label: 'Listo para escanear' },
+    scanning: { color: '#f59e0b', label: 'Buscando producto...' },
+    found:    { color: '#22c55e', label: '¡Producto encontrado!' },
+    notfound: { color: '#dc2626', label: 'No encontrado — completá los datos' },
+  }[scannerStatus];
+
   return (
     <div>
       <div className="page-header">
@@ -234,12 +307,63 @@ export function StockPage() {
           <h1 className="page-title">📦 Stock de Repuestos</h1>
           <p className="page-subtitle">{pagination.total || 0} productos en catálogo</p>
         </div>
-        <div className="page-actions">
+        <div className="page-actions" style={{ display: 'flex', gap: '8px' }}>
+          {/* Scanner toggle */}
+          <button
+            onClick={() => { setScannerEnabled(v => !v); setScannerStatus('idle'); }}
+            title={scannerEnabled ? 'Desactivar scanner' : 'Activar scanner de código de barras'}
+            style={{
+              height: '38px', padding: '0 14px', borderRadius: '8px',
+              border: `1.5px solid ${scannerEnabled ? '#dc2626' : '#e4e4e7'}`,
+              background: scannerEnabled ? '#fef2f2' : '#fff',
+              color: scannerEnabled ? '#dc2626' : '#71717a',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+              fontWeight: 600, fontSize: '0.875rem', transition: 'all 150ms',
+            }}
+          >
+            <span style={{ fontSize: '1rem' }}>📷</span>
+            {scannerEnabled ? 'Scanner ON' : 'Scanner'}
+            {scannerEnabled && (
+              <span style={{
+                display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%',
+                background: scannerStatusInfo.color, marginLeft: '2px',
+                transition: 'background 300ms',
+              }} />
+            )}
+          </button>
           <button className="btn btn-primary" onClick={() => { resetForm(); setEditingProduct(null); setShowModal(true); }}>
             + Nuevo Producto
           </button>
         </div>
       </div>
+
+      {/* Scanner active banner */}
+      {scannerEnabled && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '12px',
+          background: '#18181b', borderRadius: '12px', padding: '12px 18px',
+          marginBottom: '1rem', border: '1px solid #3f3f46',
+        }}>
+          <span style={{
+            display: 'inline-block', width: '10px', height: '10px', borderRadius: '50%',
+            background: scannerStatusInfo.color,
+            boxShadow: scannerStatus !== 'idle' ? `0 0 0 4px ${scannerStatusInfo.color}33` : 'none',
+            flexShrink: 0, transition: 'all 300ms',
+          }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ color: '#fff', fontWeight: 600, fontSize: '0.875rem' }}>
+              Scanner activo — {scannerStatusInfo.label}
+            </div>
+            <div style={{ color: '#71717a', fontSize: '0.78rem', marginTop: '2px' }}>
+              Escaneá un código de barras: si existe se abre para editar; si no, se crea con el código precargado.
+            </div>
+          </div>
+          <button
+            onClick={() => { setScannerEnabled(false); setScannerStatus('idle'); }}
+            style={{ background: 'none', border: 'none', color: '#71717a', cursor: 'pointer', fontSize: '1.1rem', lineHeight: 1, flexShrink: 0 }}
+          >✕</button>
+        </div>
+      )}
 
       {/* Search */}
       <div className="search-input-wrapper" style={{ marginBottom: 'var(--sp-lg)', maxWidth: '500px' }}>
@@ -365,7 +489,22 @@ export function StockPage() {
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '700px' }}>
             <div className="modal-header">
-              <h2 className="modal-title">{editingProduct ? 'Editar Producto' : 'Nuevo Producto'}</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <h2 className="modal-title">{editingProduct ? 'Editar Producto' : 'Nuevo Producto'}</h2>
+                {scannerEnabled && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '5px',
+                    background: '#f4f4f5', borderRadius: '999px',
+                    padding: '3px 10px', fontSize: '0.72rem', fontWeight: 600, color: '#71717a',
+                  }}>
+                    <span style={{
+                      display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%',
+                      background: scannerStatusInfo.color, transition: 'background 300ms',
+                    }} />
+                    {scannerStatusInfo.label}
+                  </div>
+                )}
+              </div>
               <button className="modal-close" onClick={() => setShowModal(false)}>✕</button>
             </div>
             <form onSubmit={handleSubmit}>
@@ -373,13 +512,18 @@ export function StockPage() {
                 <div className="form-group relative">
                   <label className="form-label">SKU / Código</label>
                   <input 
+                    id="scanner-sku-input"
                     className="form-input" 
                     value={form.sku} 
                     onChange={e => setForm({ ...form, sku: e.target.value })} 
                     onFocus={() => setActiveSuggestionField('sku')}
                     onBlur={() => setTimeout(() => setActiveSuggestionField(null), 200)}
                     disabled={!!editingProduct} 
-                    placeholder="Dejar vacío para auto-generar" 
+                    placeholder={scannerEnabled && !editingProduct ? 'Escaneá o escribí el código...' : 'Dejar vacío para auto-generar'}
+                    style={scannerEnabled && !editingProduct ? {
+                      borderColor: '#dc2626',
+                      boxShadow: '0 0 0 2px rgba(220,38,38,0.1)',
+                    } : {}}
                   />
                   {renderSuggestions('sku')}
                 </div>
